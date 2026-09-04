@@ -1,0 +1,3 @@
+# Convenience input for non-release experimentation. The unified image installs
+# the reviewed exact dependency set.
+-r requirements.lock

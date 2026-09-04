@@ -1,0 +1,7 @@
+/generated/
+/output/
+/__pycache__/
+*.pyc
+/artifacts/downloads/*
+!/artifacts/downloads/.gitkeep
+
