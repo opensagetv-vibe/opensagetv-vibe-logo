@@ -23,7 +23,13 @@ except ImportError as exc:
     ) from exc
 
 
-VERSION = "1.6.4"
+VERSION = "1.8.0"
+
+AMAZON_FIRE_TV_ICON_SIZE = (1280, 720)
+AMAZON_FIRE_TV_SAFE_AREA = (882, 448)
+# Leave a little margin inside Amazon's documented safe rectangle.
+AMAZON_FIRE_TV_TITLE_AREA = (820, 400)
+AMAZON_FIRE_TV_BACKGROUND_SIZE = (1920, 1080)
 
 SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
@@ -766,55 +772,115 @@ def overlay_tree(source_root: Path, dest_root: Path) -> int:
 
 
 def create_preview(output_root: Path) -> None:
-    items = [
-        ("Play Store",
-         output_root / "source/dev/android-shared/src/main/ic_launcher_v2-playstore.png"),
-        ("Launcher xxxhdpi",
-         output_root / "source/dev/android-shared/src/main/res/mipmap-xxxhdpi/ic_launcher_v2.png"),
-        ("Round xxxhdpi",
-         output_root / "source/dev/android-shared/src/main/res/mipmap-xxxhdpi/ic_launcher_v2_round.png"),
-        ("TV Banner",
-         output_root / "source/dev/android-tv/src/main/res/drawable/banner_v2.png"),
-        ("In-app logo",
-         output_root / "source/dev/android-shared/src/main/res/drawable/sage_logo_256.png"),
-    ]
+    def load(path: Path) -> tuple[Image.Image, str]:
+        with Image.open(path) as loaded:
+            return loaded.convert("RGBA"), loaded.mode
+
+    shared = output_root / "source/dev/android-shared/src/main"
+    tv_root = output_root / "source/dev/android-tv/src/main/res"
+    tv_banner_path = tv_root / "drawable/banner_v2.png"
+    items: list[tuple[str, Image.Image, str, bool]] = []
+    for label, path, tv_cover in [
+        ("Play Store icon", shared / "ic_launcher_v2-playstore.png", False),
+        ("Legacy launcher icon (xxxhdpi)", shared / "res/mipmap-xxxhdpi/ic_launcher_v2.png", False),
+        ("Round launcher icon (xxxhdpi)", shared / "res/mipmap-xxxhdpi/ic_launcher_v2_round.png", False),
+    ]:
+        image, source_mode = load(path)
+        items.append((label, image, source_mode, tv_cover))
+
+    adaptive_base = shared / "res/mipmap-xxxhdpi"
+    adaptive_background, _ = load(adaptive_base / "ic_launcher_v2_background.png")
+    adaptive_foreground, _ = load(adaptive_base / "ic_launcher_v2_foreground.png")
+    adaptive = adaptive_background.copy()
+    adaptive.alpha_composite(adaptive_foreground)
+    items.append(("Adaptive launcher composite (xxxhdpi)", adaptive, "RGBA layers", False))
+
+    # Fire TV's standard launcher entry inherits the same application icon as
+    # the known-good client. Do not create an android-tv module override; that
+    # changes Android resource precedence and can make Fire OS select different
+    # artwork from the legacy layout.
+    fire_icon, fire_mode = load(shared / "res/mipmap-xhdpi/ic_launcher_v2.png")
+    items.append(("Inherited sideload launcher icon (xhdpi)", fire_icon, fire_mode, False))
+
+    store_assets = output_root / "source/dev/android-tv/store-assets"
+    amazon_small, amazon_small_mode = load(
+        store_assets / "amazon-tablet-small-icon-114x114.png"
+    )
+    items.append(("Amazon tablet small icon", amazon_small, amazon_small_mode, False))
+    amazon_large, amazon_large_mode = load(
+        store_assets / "amazon-tablet-large-icon-512x512.png"
+    )
+    items.append(("Amazon tablet large icon", amazon_large, amazon_large_mode, False))
+
+    tv_banner, tv_mode = load(tv_banner_path)
+    items.append(("Android TV / app-store cover", tv_banner, tv_mode, True))
+    amazon_fire_tv, amazon_fire_tv_mode = load(
+        store_assets / "amazon-fire-tv-app-icon-1280x720.png"
+    )
+    items.append(
+        (
+            "Amazon Fire TV catalog art",
+            amazon_fire_tv,
+            amazon_fire_tv_mode,
+            True,
+        )
+    )
+    amazon_background, amazon_background_mode = load(
+        store_assets / "amazon-fire-tv-background-1920x1080.png"
+    )
+    items.append(
+        (
+            "Amazon Fire TV background (title-free)",
+            amazon_background,
+            amazon_background_mode,
+            True,
+        )
+    )
+    in_app, in_app_mode = load(shared / "res/drawable/sage_logo_256.png")
+    items.append(("In-app logo", in_app, in_app_mode, False))
 
     cell_w, cell_h = 620, 260
     preview = Image.new("RGBA", (cell_w, cell_h * len(items)), (238, 238, 238, 255))
     draw = ImageDraw.Draw(preview)
 
-    for index, (label, path) in enumerate(items):
+    for index, (label, image, source_mode, tv_cover) in enumerate(items):
         top = index * cell_h
         draw.rectangle((8, top + 8, cell_w - 8, top + cell_h - 8), fill=(255, 255, 255, 255))
-        if path.is_file():
-            with Image.open(path) as loaded:
-                image = loaded.convert("RGBA")
-            label = f"{label} {image.width}x{image.height}"
-            draw.text((18, top + 18), label, fill=(0, 0, 0, 255))
-        else:
-            draw.text((18, top + 18), f"{label} (missing)", fill=(0, 0, 0, 255))
-            continue
+        label = f"{label} | {image.width}x{image.height} | {source_mode}"
+        if tv_cover:
+            label += " | required opaque RGB"
+        draw.text((18, top + 18), label, fill=(0, 0, 0, 255))
 
-        if path.is_file():
-            max_w = cell_w - 60
-            max_h = cell_h - 70
-            factor = min(max_w / image.width, max_h / image.height, 1.0)
-            display = image.resize(
-                (max(1, round(image.width * factor)), max(1, round(image.height * factor))),
-                Image.Resampling.LANCZOS,
+        max_w = cell_w - 60
+        max_h = cell_h - 70
+        factor = min(max_w / image.width, max_h / image.height, 1.0)
+        display = image.resize(
+            (max(1, round(image.width * factor)), max(1, round(image.height * factor))),
+            Image.Resampling.LANCZOS,
+        )
+
+        background = Image.new("RGBA", display.size, (220, 220, 220, 255))
+        if not tv_cover:
+            tile = 16
+            checks = ImageDraw.Draw(background)
+            for y in range(0, display.height, tile):
+                for x in range(0, display.width, tile):
+                    fill = (210, 210, 210, 255) if ((x // tile) + (y // tile)) % 2 == 0 else (235, 235, 235, 255)
+                    checks.rectangle((x, y, min(x + tile - 1, display.width - 1), min(y + tile - 1, display.height - 1)), fill=fill)
+        background.alpha_composite(display)
+
+        if tv_cover:
+            framed = Image.new("RGBA", (background.width + 16, background.height + 16), (35, 35, 35, 255))
+            ImageDraw.Draw(framed).rounded_rectangle(
+                (1, 1, framed.width - 2, framed.height - 2), radius=8,
+                outline=(235, 235, 235, 255), width=5,
             )
+            framed.alpha_composite(background, (8, 8))
+            background = framed
 
-            background = Image.new("RGBA", display.size, (220, 220, 220, 255))
-            for y in range(0, display.height, 16):
-                for x in range(0, display.width, 16):
-                    fill = (210, 210, 210, 255) if ((x // 16) + (y // 16)) % 2 == 0 else (235, 235, 235, 255)
-                    for py in range(y, min(y + 16, display.height)):
-                        for px in range(x, min(x + 16, display.width)):
-                            background.putpixel((px, py), fill)
-            background.alpha_composite(display)
-            x = (cell_w - display.width) // 2
-            y = top + 48 + (max_h - display.height) // 2
-            preview.alpha_composite(background, (x, y))
+        x = (cell_w - background.width) // 2
+        y = top + 48 + (max_h - background.height) // 2
+        preview.alpha_composite(background, (x, y))
 
     save_png(preview, output_root / "SageTV_logo_preview.png")
 
@@ -940,6 +1006,45 @@ def generate_to_stage(
     if in_app_logo.getchannel("A").getextrema()[1] == 0:
         raise RuntimeError("The in-app logo rendered completely transparent.")
 
+    store_background_tree, store_background_report, _ = build_filtered_svg(
+        source_svg,
+        ["background", "hex-patterns", "wave"],
+        require_all=True,
+    )
+    store_background_svg_path = work_debug / "store_background_groups_only.svg"
+    store_background_tree.write(
+        store_background_svg_path,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+    store_background_page = render_svg_with_cairosvg(
+        store_background_svg_path,
+        master_size,
+        master_size,
+        render_env,
+    )
+    store_small_tree, store_small_report, _ = build_filtered_svg(
+        source_svg,
+        ["flower", "TV", "VIBE"],
+        require_all=True,
+    )
+    store_small_svg_path = work_debug / "store_small_icon_groups_only.svg"
+    store_small_tree.write(
+        store_small_svg_path,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+    store_small_page = trim_transparent(
+        render_svg_with_cairosvg(
+            store_small_svg_path,
+            in_app_render_size,
+            in_app_render_size,
+            render_env,
+        ),
+        threshold=trim_alpha_threshold,
+        padding=trim_padding,
+    )
+
     if save_debug_files:
         save_png(filtered_page, work_debug / "in_app_groups_only_page.png")
         save_png(filtered_for_crop, work_debug / "in_app_groups_only_trimmed.png")
@@ -951,10 +1056,49 @@ def generate_to_stage(
             "\n".join(master_visibility_report_lines) + "\n",
             encoding="utf-8",
         )
+        (work_debug / "store_background_selection.txt").write_text(
+            "\n".join(store_background_report) + "\n",
+            encoding="utf-8",
+        )
+        (work_debug / "store_small_icon_selection.txt").write_text(
+            "\n".join(store_small_report) + "\n",
+            encoding="utf-8",
+        )
 
+    play_store_icon = resize_square(
+        master, 512, launcher_scale, launcher_x, launcher_y
+    )
     save_png(
-        resize_square(master, 512, launcher_scale, launcher_x, launcher_y),
+        play_store_icon,
         stage_root / "source/dev/android-shared/src/main/ic_launcher_v2-playstore.png",
+    )
+
+    store_assets = stage_root / "source/dev/android-tv/store-assets"
+    save_png(
+        transformed_canvas(
+            store_small_page,
+            114,
+            114,
+            mode="contain",
+            scale=0.88,
+            offset_x=0.0,
+            offset_y=0.0,
+            background=(0, 0, 0, 0),
+        ),
+        store_assets / "amazon-tablet-small-icon-114x114.png",
+    )
+    save_png(
+        transformed_canvas(
+            filtered_for_crop,
+            512,
+            512,
+            mode="contain",
+            scale=0.90,
+            offset_x=0.0,
+            offset_y=0.0,
+            background=(0, 0, 0, 0),
+        ),
+        store_assets / "amazon-tablet-large-icon-512x512.png",
     )
 
     for density, (legacy_size, adaptive_size) in DENSITIES.items():
@@ -1005,6 +1149,7 @@ def generate_to_stage(
         save_png(adaptive_background_layer, folder / "ic_launcher_v2_background.png")
         save_png(adaptive_foreground_layer, folder / "ic_launcher_v2_foreground.png")
 
+    # TV launchers require larger 1:1 raster icons than phone launchers. Fire
     write_adaptive_xml(stage_root)
 
     banner = transformed_canvas(
@@ -1018,8 +1163,60 @@ def generate_to_stage(
         background=banner_background,
     )
     save_png(
-        banner,
+        banner.convert("RGB"),
         stage_root / "source/dev/android-tv/src/main/res/drawable/banner_v2.png",
+    )
+    # Amazon obtains these full-width images from its catalog rather than from
+    # a newly sideloaded APK. The title/subject overlay is deliberately bounded
+    # inside the documented 882x448 safe area; the abstract background is a
+    # separately submitted, title-free asset.
+    amazon_fire_tv_icon = transformed_canvas(
+        store_background_page,
+        *AMAZON_FIRE_TV_ICON_SIZE,
+        mode="cover",
+        scale=1.0,
+        offset_x=0.0,
+        offset_y=0.0,
+        background=banner_background,
+    )
+    title_overlay = transformed_canvas(
+        filtered_for_crop,
+        *AMAZON_FIRE_TV_TITLE_AREA,
+        mode="contain",
+        scale=1.0,
+        offset_x=0.0,
+        offset_y=0.0,
+        background=(0, 0, 0, 0),
+    )
+    safe_x = (AMAZON_FIRE_TV_ICON_SIZE[0] - AMAZON_FIRE_TV_SAFE_AREA[0]) // 2
+    safe_y = (AMAZON_FIRE_TV_ICON_SIZE[1] - AMAZON_FIRE_TV_SAFE_AREA[1]) // 2
+    title_x = (AMAZON_FIRE_TV_ICON_SIZE[0] - title_overlay.width) // 2
+    title_y = (AMAZON_FIRE_TV_ICON_SIZE[1] - title_overlay.height) // 2
+    if not (
+        title_x >= safe_x
+        and title_y >= safe_y
+        and title_x + title_overlay.width <= safe_x + AMAZON_FIRE_TV_SAFE_AREA[0]
+        and title_y + title_overlay.height <= safe_y + AMAZON_FIRE_TV_SAFE_AREA[1]
+    ):
+        raise RuntimeError("Amazon Fire TV title overlay escaped its content safe area.")
+    amazon_fire_tv_icon.alpha_composite(title_overlay, (title_x, title_y))
+    save_png(
+        amazon_fire_tv_icon.convert("RGB"),
+        store_assets / "amazon-fire-tv-app-icon-1280x720.png",
+    )
+
+    amazon_fire_tv_background = transformed_canvas(
+        store_background_page,
+        *AMAZON_FIRE_TV_BACKGROUND_SIZE,
+        mode="cover",
+        scale=1.0,
+        offset_x=0.0,
+        offset_y=0.0,
+        background=banner_background,
+    )
+    save_png(
+        amazon_fire_tv_background.convert("RGB"),
+        store_assets / "amazon-fire-tv-background-1920x1080.png",
     )
 
     save_png(

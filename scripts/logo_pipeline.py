@@ -23,6 +23,23 @@ EXPECTED_PNGS = {
     "android-shared/src/main/ic_launcher_v2-playstore.png": (512, 512),
     "android-shared/src/main/res/drawable/sage_logo_256.png": (320, 150),
     "android-tv/src/main/res/drawable/banner_v2.png": (320, 180),
+    "android-tv/store-assets/amazon-fire-tv-app-icon-1280x720.png": (1280, 720),
+    "android-tv/store-assets/amazon-fire-tv-background-1920x1080.png": (1920, 1080),
+    "android-tv/store-assets/amazon-tablet-large-icon-512x512.png": (512, 512),
+    "android-tv/store-assets/amazon-tablet-small-icon-114x114.png": (114, 114),
+}
+EXPECTED_MODES = {
+    "android-tv/src/main/res/drawable/banner_v2.png": "RGB",
+    "android-tv/store-assets/amazon-fire-tv-app-icon-1280x720.png": "RGB",
+    "android-tv/store-assets/amazon-fire-tv-background-1920x1080.png": "RGB",
+}
+REQUIRED_TRANSPARENCY = {
+    "android-tv/store-assets/amazon-tablet-large-icon-512x512.png",
+    "android-tv/store-assets/amazon-tablet-small-icon-114x114.png",
+}
+REQUIRED_VISIBLE_FOREGROUNDS = {
+    f"android-shared/src/main/res/mipmap-{density}/ic_launcher_v2_foreground.png"
+    for density in DENSITIES
 }
 for density, (legacy, adaptive) in DENSITIES.items():
     base = f"android-shared/src/main/res/mipmap-{density}"
@@ -52,11 +69,25 @@ def validate(root: Path) -> None:
         raise RuntimeError("missing required Android logo assets: " + ", ".join(missing))
     for relative, dimensions in EXPECTED_PNGS.items():
         with Image.open(root / relative) as image:
-            if image.size != dimensions or image.mode != "RGBA":
+            image.load()
+            expected_mode = EXPECTED_MODES.get(relative, "RGBA")
+            if image.size != dimensions or image.mode != expected_mode:
                 raise RuntimeError(
-                    f"{relative}: expected RGBA {dimensions}, got {image.mode} {image.size}"
+                    f"{relative}: expected {expected_mode} {dimensions}, got {image.mode} {image.size}"
                 )
-            image.verify()
+            if relative in REQUIRED_TRANSPARENCY:
+                alpha_min, alpha_max = image.getchannel("A").getextrema()
+                if alpha_min != 0 or alpha_max != 255:
+                    raise RuntimeError(
+                        f"{relative}: Amazon tablet icon must contain both "
+                        "transparent and opaque pixels"
+                    )
+            if relative in REQUIRED_VISIBLE_FOREGROUNDS:
+                alpha_min, alpha_max = image.getchannel("A").getextrema()
+                if alpha_max == 0 or image.getchannel("A").getbbox() is None:
+                    raise RuntimeError(
+                        f"{relative}: adaptive foreground is fully transparent"
+                    )
     for relative in EXPECTED_XMLS:
         text = (root / relative).read_text(encoding="utf-8")
         if "<adaptive-icon" not in text or "@mipmap/ic_launcher_v2_" not in text:
@@ -84,6 +115,18 @@ def install(android_root: Path) -> None:
     android_source = android_root / "source" / "dev"
     if not (android_source / "settings.gradle").is_file():
         raise RuntimeError(f"not an OpenSageTV Vibe Android checkout: {android_root}")
+    for stale_relative in (
+        "android-tv/src/main/res/drawable-xhdpi/banner_v2.png",
+        "android-tv/src/main/res/mipmap-xhdpi/banner_v2.png",
+        "android-tv/src/main/res/mipmap-mdpi/ic_launcher_v2.png",
+        "android-tv/src/main/res/mipmap-hdpi/ic_launcher_v2.png",
+        "android-tv/src/main/res/mipmap-xhdpi/ic_launcher_v2.png",
+        "android-tv/src/main/res/mipmap-xxhdpi/ic_launcher_v2.png",
+        "android-tv/src/main/res/mipmap-xxxhdpi/ic_launcher_v2.png",
+    ):
+        stale_banner = android_source / stale_relative
+        if stale_banner.is_file():
+            stale_banner.unlink()
     entries = []
     for relative in EXPECTED:
         source = SOURCE_ROOT / relative
@@ -100,7 +143,7 @@ def install(android_root: Path) -> None:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps({
         "schema": 1, "source_project": "opensagetv-vibe-logo",
-        "generator_version": "1.6.4", "assets": entries,
+        "generator_version": "1.8.0", "assets": entries,
     }, indent=2) + "\n", encoding="utf-8")
     refresh_android_source_manifest(android_root, [entry["path"] for entry in entries])
     print(f"PASS: installed {len(entries)} logo assets into {android_root}")
@@ -118,6 +161,10 @@ def refresh_android_source_manifest(android_root: Path, asset_paths: list[str]) 
         checksum, relative = line.split("  ", 1)
         values[relative] = checksum
     values.pop("branding/SageTV-Vibe.png", None)
+    values.pop("source/dev/android-tv/src/main/res/drawable-xhdpi/banner_v2.png", None)
+    values.pop("source/dev/android-tv/src/main/res/mipmap-xhdpi/banner_v2.png", None)
+    for obsolete in tuple(name for name in values if name.startswith("source/dev/firetv-launcher/")):
+        values.pop(obsolete, None)
     managed = [*asset_paths, "config/logo-assets.sha256"]
     for relative in managed:
         target = android_root / relative
