@@ -1,5 +1,8 @@
 # Changelog
 
+- Updated repository CI to Ubuntu 24.04 and the current Node 24-based
+  `actions/checkout@v7` and `actions/setup-python@v7` releases.
+
 - Prepared the generator for public GitHub development with source-only checks,
   contribution/security guidance, and the shared Vibe workflow contract.
 
