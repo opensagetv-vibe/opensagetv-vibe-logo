@@ -9,6 +9,11 @@ Never hand-edit generated Android PNG/XML resources. Generate and install them
 through the unified build environment, validate every expected asset and size,
 and preserve the M PLUS Rounded 1c license.
 
+Release validation is impact-based: rerun only gates the release changes could
+affect. Do not repeat unrelated completed gates. Run the full gate suite only
+when the user explicitly requests it or a broad dependency/architecture change
+requires it, and document that reason and scope.
+
 
 ## Stock-server test-control policy
 
@@ -23,4 +28,3 @@ and preserve the M PLUS Rounded 1c license.
   expressed through the stock plugin/API boundary. Document the proven API
   gap, keep the extension optional and negotiated with a safe stock fallback,
   and verify older clients and installations remain unaffected.
-
